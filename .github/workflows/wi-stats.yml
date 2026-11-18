@@ -4,7 +4,7 @@ name: wi-stats
 # listing feed itself, as before.
 on:
   schedule:
-    - cron: '7,22,37,52 * * * *'
+    - cron: '3,18,33,48 * * * *'
   workflow_dispatch:
 permissions:
   contents: write
