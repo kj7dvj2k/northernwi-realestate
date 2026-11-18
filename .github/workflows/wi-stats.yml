@@ -1,33 +1,50 @@
 name: wi-stats
 # Rewrites stats/wi-stats.json (county and zip numbers for the AgentFire site's Wisconsin maps) every 15 minutes.
-# The site reads it from raw.githubusercontent.com; when the file is missing or over 4 hours old the browser pulls the
+# GitHub's scheduler is unreliable, so each run loops for about 5.5 hours, refreshing every 15 minutes, then starts
+# the next run itself (workflow_dispatch with the built-in token). The hourly schedule is only a watchdog that restarts
+# the chain if it ever breaks; the concurrency group keeps at most one run going and one waiting, so chains never double.
+# The site reads the file from raw.githubusercontent.com; when it is missing or over 4 hours old the browser pulls the
 # listing feed itself, as before.
 on:
   schedule:
-    - cron: '3,18,33,48 * * * *'
+    - cron: '7 * * * *'
   workflow_dispatch:
 permissions:
   contents: write
+  actions: write
 concurrency:
   group: wi-stats
   cancel-in-progress: false
 jobs:
   stats:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: node tools/wi-stats.mjs
-      - name: commit if changed
+      - name: refresh every 15 minutes for 5.5 hours
         run: |
-          if [ -n "$(git status --porcelain stats/wi-stats.json)" ]; then
-            git config user.name "wi-stats"
-            git config user.email "wi-stats@users.noreply.github.com"
-            git add stats/wi-stats.json
-            git commit -m "wi-stats $(date -u +%Y-%m-%dT%H:%MZ)"
-            git pull --rebase
-            git push
-          fi
+          git config user.name "wi-stats"
+          git config user.email "wi-stats@users.noreply.github.com"
+          while [ "$SECONDS" -lt 19800 ]; do
+            start=$SECONDS
+            git pull --rebase --quiet || true
+            if node tools/wi-stats.mjs; then
+              if [ -n "$(git status --porcelain stats/wi-stats.json)" ]; then
+                git add stats/wi-stats.json
+                git commit -m "wi-stats $(date -u +%Y-%m-%dT%H:%MZ)"
+                git pull --rebase --quiet && git push || echo "push failed, next pass retries"
+              fi
+            else
+              echo "refresh failed, next pass retries"
+            fi
+            left=$(( 900 - (SECONDS - start) ))
+            if [ "$left" -gt 0 ] && [ $(( SECONDS + left )) -lt 19800 ]; then sleep "$left"; else break; fi
+          done
+      - name: start the next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run wi-stats.yml --ref main --repo "$GITHUB_REPOSITORY"
